@@ -10,7 +10,7 @@ pub(crate) struct FlakeInputsArgs {
         short,
         long,
         help = "nix expression path",
-        default_value = "./lib/inputs.nix",
+        default_value = "./lib/select_device_build_inputs.nix",
         value_parser = value_parser_for_pathbuf
     )]
     pub(crate) expression_path: PathBuf,
