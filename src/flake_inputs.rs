@@ -95,15 +95,15 @@ pub(crate) fn replace_inputs(nix_expression_path: PathBuf, flake_nix_path: PathB
                         .iter()
                         .position(|child| child.as_node() == Some(&attr_set))
                         .map(|start| start..start + 1)
-                        .expect("找不到目标索引");
+                        .expect("node not found");
                     attr_path_value.splice_children(
                         range,
                         nix_expression_syntax.children_with_tokens().collect(),
                     );
-                    println!("{}", attr_set.to_string());
+                    // println!("{}", attr_set.to_string());
                 }
             }
-            println!("{}", flake_nix_syntax.to_string());
+            // println!("{}", flake_nix_syntax.to_string());
 
             // 将变更后的语法树写入flake.nix文件
             let mut flake_file = File::create(flake_nix_path)?;
