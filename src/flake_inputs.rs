@@ -59,13 +59,11 @@ pub(crate) fn replace_inputs(nix_expression_path: PathBuf, flake_nix_path: PathB
                         .position(|child| child.as_node() == Some(&attr_set))
                         .map(|start| start..start + 1)
                         .expect("node not found");
-                    println!("{}", attr_set.to_string());
                     attr_path_value.splice_children(
                         range,
                         nix_expression_syntax.children_with_tokens().collect(),
                     );
                 });
-            println!("{}", flake_nix_syntax.to_string());
             // 将变更后的语法树写入flake.nix文件
             let mut flake_file = File::create(flake_nix_path)?;
             let _ = flake_file.write_all(flake_nix_syntax.to_string().as_bytes());

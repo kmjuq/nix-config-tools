@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand};
 use flake_inputs::{FlakeInputsArgs, replace_inputs};
 
 use flake_home::FlakeHomeArgs;
-use rnix::ast::AttrSet;
 
 use crate::flake_home::replace_flake_home;
 

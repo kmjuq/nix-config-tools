@@ -27,7 +27,7 @@ pub(crate) struct FlakeHomeArgs {
     )]
     pub(crate) property: String,
 
-    #[arg(short, long, help = "flake home dir path", required = false,value_parser = value_parser_for_pathbuf)]
+    #[arg(short, long, help = "flake home dir path", required = false, value_parser = value_parser_for_pathbuf)]
     pub(crate) flake_home_dir: Option<PathBuf>,
 }
 
@@ -60,7 +60,6 @@ pub(crate) fn replace_flake_home(
                         range,
                         flake_home_syntax_node(flake_home_dir).children_with_tokens().collect(),
                     );
-                    println!("{:#?}",attr_path_value);
                     Some(attr_path_value)
                 });
             
