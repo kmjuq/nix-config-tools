@@ -1,8 +1,10 @@
-use std::{fs::{self, File}, io::Write, path::PathBuf, process::Command};
+use std::{fs::File, io::Write, path::PathBuf, process::Command};
 
-use anyhow::{Context, Ok, Result, bail};
+use anyhow::{Ok, Result, bail};
 use clap::Args;
 use rnix::SyntaxNode;
+
+use crate::util::{find_attr_inputs_node, parse_nix_file, syntax, value_parser_for_pathbuf};
 
 #[derive(Args)]
 pub(crate) struct FlakeInputsArgs {
@@ -25,48 +27,6 @@ pub(crate) struct FlakeInputsArgs {
     pub(crate) flake_path: PathBuf,
 }
 
-fn value_parser_for_pathbuf(path_str: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(path_str);
-    if path.is_file() {
-        Ok(path)
-    } else {
-        bail!(format!("The specified [{}] path does not exist or is not a file",path_str))
-    }
-}
-
-fn parse_nix_file(file: &str) -> Result<SyntaxNode> {
-    let content = fs::read_to_string(file).context(format!(
-        "parse_nix_file Failed to read config file: {}",
-        file
-    ))?;
-    Ok(syntax(content))
-}
-
-fn syntax(content: String) -> SyntaxNode {
-    let parse = rnix::Root::parse(&content);
-    parse.syntax().clone_for_update()
-}
-
-fn find_attr_inputs_node(root: &SyntaxNode) -> Option<SyntaxNode> {
-    for attr_set in root
-        .children()
-        .filter(|n| n.kind() == rnix::SyntaxKind::NODE_ATTR_SET)
-    {
-        for attr_path_value in attr_set
-            .children()
-            .filter(|n| n.kind() == rnix::SyntaxKind::NODE_ATTRPATH_VALUE)
-        {
-            if let Some(_) = attr_path_value
-                .descendants()
-                .find(|n| n.kind() == rnix::SyntaxKind::NODE_ATTRPATH && n.text() == "inputs")
-            {
-                return Some(attr_path_value);
-            }
-        }
-    }
-    None
-}
-
 fn nix_eval_content(file: &str) -> Result<String> {
     let stdout = Command::new("nix")
         .arg("eval")
@@ -85,26 +45,27 @@ pub(crate) fn replace_inputs(nix_expression_path: PathBuf, flake_nix_path: PathB
             
             let flake_nix_syntax = parse_nix_file(flake_nix_path_str)?;
 
-            if let Some(attr_path_value) = find_attr_inputs_node(&flake_nix_syntax) {
-                if let Some(attr_set) = attr_path_value
-                    .children()
-                    .find(|n| n.kind() == rnix::SyntaxKind::NODE_ATTR_SET)
-                {
+            find_attr_inputs_node(&flake_nix_syntax,"inputs")
+                .and_then(|attr_path_value| {
+                    attr_path_value.children()
+                        .find(|n| n.kind() == rnix::SyntaxKind::NODE_ATTR_SET)
+                        .map(|attr_set| (attr_path_value, attr_set))
+                })
+                .map(|(attr_path_value, attr_set)| {
+                    // 处理节点替换逻辑
                     let children: Vec<_> = attr_path_value.children_with_tokens().collect();
                     let range = children
                         .iter()
                         .position(|child| child.as_node() == Some(&attr_set))
                         .map(|start| start..start + 1)
                         .expect("node not found");
+                    println!("{}", attr_set.to_string());
                     attr_path_value.splice_children(
                         range,
                         nix_expression_syntax.children_with_tokens().collect(),
                     );
-                    // println!("{}", attr_set.to_string());
-                }
-            }
-            // println!("{}", flake_nix_syntax.to_string());
-
+                });
+            println!("{}", flake_nix_syntax.to_string());
             // 将变更后的语法树写入flake.nix文件
             let mut flake_file = File::create(flake_nix_path)?;
             let _ = flake_file.write_all(flake_nix_syntax.to_string().as_bytes());
