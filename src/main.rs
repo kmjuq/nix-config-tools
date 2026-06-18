@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
+use export_env::{ExportEnvArgs, export_env};
 use flake_inputs::{FlakeInputsArgs, replace_inputs};
 
 use flake_home::FlakeHomeArgs;
 
 use crate::flake_home::replace_flake_home;
 
+mod export_env;
 mod flake_home;
 mod flake_inputs;
 mod util;
@@ -23,6 +25,16 @@ enum Commands {
     FlakeInputs(FlakeInputsArgs),
     /// Replace self attribute set file flake home dir
     FlakeHome(FlakeHomeArgs),
+    /// Export environment variables from a file.
+    #[command(
+        long_about = "Export environment variables from a file.\n\n\
+                      Outputs 'export KEY=VALUE' statements to stdout.\n\
+                      To inject into your current shell, use one of:\n  \
+                      eval $(nix-config-tools export-env -f <file> -p <prefix> -m <mode>)\n  \
+                      source <(nix-config-tools export-env -f <file> -p <prefix> -m <mode>)\n\n\
+                      Or copy the printed export commands and run them manually."
+    )]
+    ExportEnv(ExportEnvArgs),
 }
 
 fn main() {
@@ -40,6 +52,9 @@ fn main() {
             flake_home_dir,
         }) => {
             let _ = replace_flake_home(self_var_path, property, flake_home_dir);
+        }
+        Commands::ExportEnv(ExportEnvArgs { file, prefix, mode }) => {
+            let _ = export_env(file, prefix, mode);
         }
     }
     
