@@ -26,14 +26,6 @@ enum Commands {
     /// Replace self attribute set file flake home dir
     FlakeHome(FlakeHomeArgs),
     /// Export environment variables from a file.
-    #[command(
-        long_about = "Export environment variables from a file.\n\n\
-                      Outputs 'export KEY=VALUE' statements to stdout.\n\
-                      To inject into your current shell, use one of:\n  \
-                      eval $(nix-config-tools export-env -f <file> -p <prefix> -m <mode>)\n  \
-                      source <(nix-config-tools export-env -f <file> -p <prefix> -m <mode>)\n\n\
-                      Or copy the printed export commands and run them manually."
-    )]
     ExportEnv(ExportEnvArgs),
 }
 
@@ -58,34 +50,4 @@ fn main() {
         }
     }
     
-}
-
-#[cfg(test)]
-mod test {
-
-    #[test]
-    fn flake_inputs() {
-        use crate::flake_inputs::{replace_inputs, FlakeInputsArgs};
-        use std::path::PathBuf;
-
-        let args = FlakeInputsArgs {
-            expression_path: PathBuf::from("/Users/kemengjian/workspace/git/nixos-config/lib/select_device_build_inputs.nix"),
-            flake_path: PathBuf::from("/Users/kemengjian/workspace/git/nixos-config/flake.nix"),
-        };
-        let _ = replace_inputs(args.expression_path, args.flake_path);
-    }
-
-    #[test]
-    fn flake_home() {
-        use crate::flake_home::{replace_flake_home, FlakeHomeArgs};
-        use std::path::PathBuf;
-
-        let args = FlakeHomeArgs {
-            self_var_path: PathBuf::from("/Users/kemengjian/workspace/git/nixos-config/self.nix"),
-            property: "flakeHome".to_string(),
-            flake_home_dir: Some("/Users/kemengjian/workspace/git/nixos-config/".to_string().into()),
-        };
-        let _ = replace_flake_home(args.self_var_path, args.property, args.flake_home_dir);
-    }
-
 }

@@ -8,3 +8,6 @@ anyhow = "1.0.98"
 clap = { version = "4.5.38", features = ["derive"] }
 configparser = "3"
 rnix = "0.12.0"
+
+[dev-dependencies]
+tempfile = "3"
