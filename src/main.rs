@@ -45,8 +45,8 @@ fn main() {
         }) => {
             let _ = replace_flake_home(self_var_path, property, flake_home_dir);
         }
-        Commands::ExportEnv(ExportEnvArgs { file, prefix, mode }) => {
-            let _ = export_env(file, prefix, mode);
+        Commands::ExportEnv(ExportEnvArgs { files, prefix }) => {
+            let _ = export_env(files, prefix);
         }
     }
     

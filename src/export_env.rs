@@ -1,9 +1,7 @@
 use std::{fs, path::PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-
-use crate::util::value_parser_for_pathbuf;
 
 /// 导出模式枚举
 #[derive(ValueEnum, Clone, PartialEq, Debug)]
@@ -14,17 +12,45 @@ pub(crate) enum ExportMode {
     File,
 }
 
+/// 文件路径与模式的绑定，由 value_parser 解析 `path:mode` 格式
+#[derive(Clone, Debug)]
+pub(crate) struct FileWithMode {
+    pub(crate) path: PathBuf,
+    pub(crate) mode: ExportMode,
+}
+
+/// 解析 `-f` 参数值：支持 `path`（默认 ini）或 `path:mode` 格式
+fn parse_file_with_mode(s: &str) -> Result<FileWithMode> {
+    match s.rsplit_once(':') {
+        Some((path, "ini")) => Ok(FileWithMode {
+            path: PathBuf::from(path),
+            mode: ExportMode::Ini,
+        }),
+        Some((path, "file")) => Ok(FileWithMode {
+            path: PathBuf::from(path),
+            mode: ExportMode::File,
+        }),
+        Some((_, mode)) => bail!("unknown mode '{}', expected 'ini' or 'file'", mode),
+        None => Ok(FileWithMode {
+            path: PathBuf::from(s),
+            mode: ExportMode::Ini,
+        }),
+    }
+}
+
 /// `export-env` 子命令的参数
 #[derive(Args)]
 pub(crate) struct ExportEnvArgs {
-    /// 要读取的文件路径
+    /// 要读取的文件路径，支持 `path` 或 `path:mode` 格式（mode 为 ini 或 file，默认 ini）。
+    /// 可多次指定以处理多个文件。
     #[arg(
         short,
-        long,
-        help = "Path to the file to read",
-        value_parser = value_parser_for_pathbuf
+        long = "file",
+        help = "File to read: 'path' (default ini) or 'path:mode' where mode is 'ini' or 'file'",
+        value_parser = parse_file_with_mode,
+        required = true
     )]
-    pub(crate) file: PathBuf,
+    pub(crate) files: Vec<FileWithMode>,
 
     /// 环境变量名的参数前缀（位于固定前缀之后），为空则省略
     #[arg(
@@ -34,15 +60,6 @@ pub(crate) struct ExportEnvArgs {
         default_value = ""
     )]
     pub(crate) prefix: String,
-
-    /// 导出模式：ini 或 file
-    #[arg(
-        short,
-        long,
-        help = "Mode: 'ini' for key=value format, 'file' for whole file content",
-        default_value = "ini"
-    )]
-    pub(crate) mode: ExportMode,
 }
 
 /// 固定前缀，始终出现在导出环境变量名的最前面
@@ -58,46 +75,66 @@ fn sanitize(s: &str) -> String {
 
 /// 从文件中导出环境变量。
 ///
-/// 支持两种模式：
+/// 每个文件可以独立指定模式（ini 或 file）：
 /// - `ini` 模式：读取 INI 格式文件（key=value），
 ///   每个 key 导出为 `nct_[_{prefix}]_{清洗后的文件名}_{清洗后的section}_{清洗后的key}={value}`，
 ///   没有 section 的 key 归入 "default" section。prefix 为空时省略。
 /// - `file` 模式：读取整个文件内容，
 ///   导出单个环境变量 `nct_[_{prefix}]_{清洗后的文件名}={文件内容}`。prefix 为空时省略。
-pub(crate) fn export_env(file: PathBuf, prefix: String, mode: ExportMode) -> Result<()> {
-    // 从文件路径中提取文件名（不含扩展名）
-    let file_stem = file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
+///
+/// `files` 支持传入多个文件，每个文件独立解析和导出。
+pub(crate) fn export_env(files: Vec<FileWithMode>, prefix: String) -> Result<()> {
+    let mut all_vars: Vec<(String, String)> = Vec::new();
 
-    let vars = match mode {
-        ExportMode::Ini => export_ini_mode(&file, &prefix, file_stem),
-        ExportMode::File => export_file_mode(&file, &prefix, file_stem),
-    }?;
+    for fwm in &files {
+        let file = &fwm.path;
+        let file_stem = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
 
-    eprintln!("generate export envs command:");
-    for (name, value) in &vars {
-        // 输出 export 语句，用户可复制执行，也可通过 eval/source 自动注入
-        // eval 会捕获 std out, 然后忽略 std err，因此即想要提示也想要被执行，则两者都需要输出
-        println!("  export {}={};", name, value);
-        eprintln!("  export {}={};", name, value);
+        let vars = match fwm.mode {
+            ExportMode::Ini => export_ini_mode(file, &prefix, file_stem),
+            ExportMode::File => export_file_mode(file, &prefix, file_stem),
+        }
+        .with_context(|| format!("failed to export file: {}", file.display()))?;
+
+        all_vars.extend(vars);
+    }
+
+    eprintln!("Exported {} environment variable(s):", all_vars.len());
+    for (name, _) in &all_vars {
+        eprintln!("  {}", name);
+    }
+    // 输出 export 语句到 stdout，供 eval/source 捕获执行
+    for (name, value) in &all_vars {
+        println!("export {}={};", name, value);
     }
 
     // 输出可复制的 eval / source 命令，方便用户一键注入
-    let file_path = file.display();
-    let mode_str = match mode {
-        ExportMode::Ini => "ini",
-        ExportMode::File => "file",
-    };
     let prefix_opt = if prefix.is_empty() {
         String::new()
     } else {
         format!(" -p {}", prefix)
     };
+    let files_args: Vec<String> = files
+        .iter()
+        .map(|fwm| {
+            let mode_str = match fwm.mode {
+                ExportMode::Ini => "ini",
+                ExportMode::File => "file",
+            };
+            format!("-f {}:{}", fwm.path.display(), mode_str)
+        })
+        .collect();
+    let files_str = files_args.join(" ");
+
     eprintln!();
     eprintln!("To inject into current shell, copy and run:");
-    eprintln!("   eval $(nix-config-tools export-env -f {}{} -m {})", file_path, prefix_opt, mode_str);
+    eprintln!(
+        "   eval $(nix-config-tools export-env {} {})",
+        files_str, prefix_opt
+    );
 
     Ok(())
 }
@@ -182,6 +219,8 @@ fn build_ini_lines(content: &str, prefix: &str, file_stem: &str) -> Vec<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     // ==================== sanitize 函数测试 ====================
 
@@ -424,6 +463,139 @@ mod tests {
         let content = content.trim().to_string();
         let var_name = build_var_name(prefix, &sanitize(file_stem));
         vec![(var_name, content)]
+    }
+
+    // ==================== 多文件集成测试 ====================
+
+    /// 辅助函数：创建临时文件并写入内容
+    fn create_temp_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        file
+    }
+
+    /// 辅助函数：从 NamedTempFile 构建 FileWithMode
+    fn fwm(file: &NamedTempFile, mode: ExportMode) -> FileWithMode {
+        FileWithMode {
+            path: file.path().to_path_buf(),
+            mode,
+        }
+    }
+
+    /// 测试多文件导出：两个 ini 文件的变量应该合并输出
+    #[test]
+    fn test_export_env_multiple_files_ini() -> Result<()> {
+        let file1 = create_temp_file("PORT=8080\nHOST=localhost\n");
+        let file2 = create_temp_file("DB_USER=admin\nDB_PASS=secret\n");
+
+        let files = vec![fwm(&file1, ExportMode::Ini), fwm(&file2, ExportMode::Ini)];
+        let result = export_env(files, "app".to_string());
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试多文件导出：file 模式下多个文件的变量应该合并输出
+    #[test]
+    fn test_export_env_multiple_files_file_mode() -> Result<()> {
+        let file1 = create_temp_file("token-value-1\n");
+        let file2 = create_temp_file("token-value-2\n");
+
+        let files = vec![fwm(&file1, ExportMode::File), fwm(&file2, ExportMode::File)];
+        let result = export_env(files, "app".to_string());
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试多文件导出：其中一个文件不存在时返回错误
+    #[test]
+    fn test_export_env_multiple_files_one_missing() {
+        let file1 = create_temp_file("PORT=8080\n");
+        let missing = FileWithMode {
+            path: PathBuf::from("/nonexistent/file.ini"),
+            mode: ExportMode::Ini,
+        };
+
+        let files = vec![fwm(&file1, ExportMode::Ini), missing];
+        let result = export_env(files, "app".to_string());
+        assert!(result.is_err());
+    }
+
+    /// 测试多文件导出：空文件列表应该正常处理（无输出）
+    #[test]
+    fn test_export_env_empty_file_list() -> Result<()> {
+        let result = export_env(vec![], "app".to_string());
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试多文件导出：单文件仍然正常工作（向后兼容）
+    #[test]
+    fn test_export_env_single_file() -> Result<()> {
+        let file = create_temp_file("PORT=8080\n");
+        let files = vec![fwm(&file, ExportMode::Ini)];
+        let result = export_env(files, "app".to_string());
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试多文件导出：不同文件名产生不同前缀
+    #[test]
+    fn test_export_env_multiple_files_distinct_names() -> Result<()> {
+        let file1 = create_temp_file("KEY1=val1\n");
+        let file2 = create_temp_file("KEY2=val2\n");
+
+        let files = vec![fwm(&file1, ExportMode::Ini), fwm(&file2, ExportMode::Ini)];
+        let result = export_env(files, "test".to_string());
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试混合模式：同时使用 ini 和 file 模式
+    #[test]
+    fn test_export_env_mixed_modes() -> Result<()> {
+        let ini_file = create_temp_file("PORT=8080\n");
+        let file_file = create_temp_file("my-secret-token\n");
+
+        let files = vec![fwm(&ini_file, ExportMode::Ini), fwm(&file_file, ExportMode::File)];
+        let result = export_env(files, "app".to_string());
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    // ==================== parse_file_with_mode 测试 ====================
+
+    /// 测试解析不带 mode 后缀的路径，默认返回 ini
+    #[test]
+    fn test_parse_file_with_mode_default() -> Result<()> {
+        let fwm = parse_file_with_mode("/path/to/config.ini")?;
+        assert_eq!(fwm.path, PathBuf::from("/path/to/config.ini"));
+        assert_eq!(fwm.mode, ExportMode::Ini);
+        Ok(())
+    }
+
+    /// 测试解析 `path:ini` 格式
+    #[test]
+    fn test_parse_file_with_mode_explicit_ini() -> Result<()> {
+        let fwm = parse_file_with_mode("/path/to/file:ini")?;
+        assert_eq!(fwm.path, PathBuf::from("/path/to/file"));
+        assert_eq!(fwm.mode, ExportMode::Ini);
+        Ok(())
+    }
+
+    /// 测试解析 `path:file` 格式
+    #[test]
+    fn test_parse_file_with_mode_explicit_file() -> Result<()> {
+        let fwm = parse_file_with_mode("/path/to/token:file")?;
+        assert_eq!(fwm.path, PathBuf::from("/path/to/token"));
+        assert_eq!(fwm.mode, ExportMode::File);
+        Ok(())
+    }
+
+    /// 测试解析未知 mode 返回错误
+    #[test]
+    fn test_parse_file_with_mode_unknown() {
+        let result = parse_file_with_mode("/path/to/file:unknown");
+        assert!(result.is_err());
     }
 }
 
