@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
@@ -60,10 +60,21 @@ pub(crate) struct ExportEnvArgs {
         default_value = ""
     )]
     pub(crate) prefix: String,
+
+    /// 以 JSON 格式输出所有环境变量，方便其他语言解析
+    #[arg(
+        short = 'j',
+        long,
+        help = "Output all environment variables as a single JSON object",
+        default_value = "false"
+    )]
+    pub(crate) json: bool,
 }
 
 /// 固定前缀，始终出现在导出环境变量名的最前面
 const FIXED_PREFIX: &str = "nct";
+
+const NCT_ENV_NAME: &str = "NCT_ENV_JSON";
 
 /// 对字符串进行清洗，使其符合环境变量命名规范。
 /// 将非字母数字和下划线的字符替换为 `_`。
@@ -83,7 +94,7 @@ fn sanitize(s: &str) -> String {
 ///   导出单个环境变量 `nct_[_{prefix}]_{清洗后的文件名}={文件内容}`。prefix 为空时省略。
 ///
 /// `files` 支持传入多个文件，每个文件独立解析和导出。
-pub(crate) fn export_env(files: Vec<FileWithMode>, prefix: String) -> Result<()> {
+pub(crate) fn export_env(files: Vec<FileWithMode>, prefix: String, json: bool) -> Result<()> {
     let mut all_vars: Vec<(String, String)> = Vec::new();
 
     for fwm in &files {
@@ -106,12 +117,24 @@ pub(crate) fn export_env(files: Vec<FileWithMode>, prefix: String) -> Result<()>
     for (name, _) in &all_vars {
         eprintln!("  {}", name);
     }
-    // 输出 export 语句到 stdout，供 eval/source 捕获执行
-    for (name, value) in &all_vars {
-        println!("export {}={};", name, value);
+
+    if json {
+        // JSON 模式：将所有环境变量打包为一个大 JSON，只输出一个 export 语句
+        let mut map: BTreeMap<&str, &str> = BTreeMap::new();
+        for (name, value) in &all_vars {
+            map.insert(name.as_str(), value.as_str());
+        }
+        let json_output = serde_json::to_string(&map)?;
+        println!("export {}={};", NCT_ENV_NAME,json_output);
+    } else {
+        // 非 JSON 模式：每个变量输出一个 export 语句
+        for (name, value) in &all_vars {
+            println!("export {}={};", name, value);
+        }
     }
 
-    // 输出可复制的 eval / source 命令，方便用户一键注入
+    // 输出可复制的 eval 命令到 stderr
+    let json_flag = if json { " --json" } else { "" };
     let prefix_opt = if prefix.is_empty() {
         String::new()
     } else {
@@ -132,8 +155,8 @@ pub(crate) fn export_env(files: Vec<FileWithMode>, prefix: String) -> Result<()>
     eprintln!();
     eprintln!("To inject into current shell, copy and run:");
     eprintln!(
-        "   eval $(nix-config-tools export-env {} {})",
-        files_str, prefix_opt
+        "   eval $(nix-config-tools export-env {} {}{})",
+        files_str, prefix_opt, json_flag
     );
 
     Ok(())
@@ -489,7 +512,7 @@ mod tests {
         let file2 = create_temp_file("DB_USER=admin\nDB_PASS=secret\n");
 
         let files = vec![fwm(&file1, ExportMode::Ini), fwm(&file2, ExportMode::Ini)];
-        let result = export_env(files, "app".to_string());
+        let result = export_env(files, "app".to_string(), false);
         assert!(result.is_ok());
         Ok(())
     }
@@ -501,7 +524,7 @@ mod tests {
         let file2 = create_temp_file("token-value-2\n");
 
         let files = vec![fwm(&file1, ExportMode::File), fwm(&file2, ExportMode::File)];
-        let result = export_env(files, "app".to_string());
+        let result = export_env(files, "app".to_string(), false);
         assert!(result.is_ok());
         Ok(())
     }
@@ -516,14 +539,14 @@ mod tests {
         };
 
         let files = vec![fwm(&file1, ExportMode::Ini), missing];
-        let result = export_env(files, "app".to_string());
+        let result = export_env(files, "app".to_string(), false);
         assert!(result.is_err());
     }
 
     /// 测试多文件导出：空文件列表应该正常处理（无输出）
     #[test]
     fn test_export_env_empty_file_list() -> Result<()> {
-        let result = export_env(vec![], "app".to_string());
+        let result = export_env(vec![], "app".to_string(), false);
         assert!(result.is_ok());
         Ok(())
     }
@@ -533,7 +556,7 @@ mod tests {
     fn test_export_env_single_file() -> Result<()> {
         let file = create_temp_file("PORT=8080\n");
         let files = vec![fwm(&file, ExportMode::Ini)];
-        let result = export_env(files, "app".to_string());
+        let result = export_env(files, "app".to_string(), false);
         assert!(result.is_ok());
         Ok(())
     }
@@ -545,7 +568,7 @@ mod tests {
         let file2 = create_temp_file("KEY2=val2\n");
 
         let files = vec![fwm(&file1, ExportMode::Ini), fwm(&file2, ExportMode::Ini)];
-        let result = export_env(files, "test".to_string());
+        let result = export_env(files, "test".to_string(), false);
         assert!(result.is_ok());
         Ok(())
     }
@@ -557,7 +580,50 @@ mod tests {
         let file_file = create_temp_file("my-secret-token\n");
 
         let files = vec![fwm(&ini_file, ExportMode::Ini), fwm(&file_file, ExportMode::File)];
-        let result = export_env(files, "app".to_string());
+        let result = export_env(files, "app".to_string(), false);
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试 JSON 输出模式：所有环境变量合并为一个 JSON 对象
+    #[test]
+    fn test_export_env_json_mode() -> Result<()> {
+        let file1 = create_temp_file("PORT=8080\nHOST=localhost\n");
+        let file2 = create_temp_file("DB_USER=admin\n");
+
+        let files = vec![fwm(&file1, ExportMode::Ini), fwm(&file2, ExportMode::Ini)];
+        let result = export_env(files, "app".to_string(), true);
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试 JSON 输出模式：file 模式在 JSON 中正常
+    #[test]
+    fn test_export_env_json_mode_file() -> Result<()> {
+        let file = create_temp_file("my-secret-token\n");
+
+        let files = vec![fwm(&file, ExportMode::File)];
+        let result = export_env(files, "app".to_string(), true);
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试 JSON 输出模式：空文件列表输出空 JSON
+    #[test]
+    fn test_export_env_json_mode_empty() -> Result<()> {
+        let result = export_env(vec![], "app".to_string(), true);
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    /// 测试 JSON 输出模式：混合 ini 和 file 模式
+    #[test]
+    fn test_export_env_json_mode_mixed() -> Result<()> {
+        let ini_file = create_temp_file("PORT=8080\n");
+        let file_file = create_temp_file("token-value\n");
+
+        let files = vec![fwm(&ini_file, ExportMode::Ini), fwm(&file_file, ExportMode::File)];
+        let result = export_env(files, "app".to_string(), true);
         assert!(result.is_ok());
         Ok(())
     }
