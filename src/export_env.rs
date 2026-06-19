@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
 use clap::{Args, ValueEnum};
 
 /// 导出模式枚举
@@ -125,7 +126,9 @@ pub(crate) fn export_env(files: Vec<FileWithMode>, prefix: String, json: bool) -
             map.insert(name.as_str(), value.as_str());
         }
         let json_output = serde_json::to_string(&map)?;
-        println!("export {}={};", NCT_ENV_NAME,json_output);
+        // base64 编码，避免 shell 转义问题
+        let encoded = base64::engine::general_purpose::STANDARD.encode(json_output);
+        println!("export {}={};", NCT_ENV_NAME, encoded);
     } else {
         // 非 JSON 模式：每个变量输出一个 export 语句
         for (name, value) in &all_vars {
